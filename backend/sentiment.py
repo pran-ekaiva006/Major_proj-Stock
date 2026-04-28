@@ -1,33 +1,73 @@
 """
 News Sentiment Analysis Module
 ================================
-Fetches news headlines and scores sentiment using VADER.
+Fetches news headlines and scores sentiment using a keyword-based approach.
 Uses Google News RSS (free, no API key needed).
 """
 
 import logging
 import re
-from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 log = logging.getLogger(__name__)
 
-# Lazy imports
-_vader = None
+# ──────────────────────────────────────────────────────────────────────
+# Keyword-Based Sentiment (no external deps needed)
+# ──────────────────────────────────────────────────────────────────────
+
+POSITIVE_WORDS = {
+    'surge', 'soar', 'rally', 'gain', 'rise', 'jump', 'climb', 'boost',
+    'profit', 'growth', 'bullish', 'upgrade', 'outperform', 'buy', 'strong',
+    'positive', 'record', 'high', 'beat', 'exceed', 'optimistic', 'recovery',
+    'boom', 'breakout', 'momentum', 'upside', 'earnings', 'revenue', 'success',
+    'win', 'deal', 'partnership', 'innovation', 'launch', 'expand', 'dividend',
+    'opportunity', 'milestone', 'approve', 'backed', 'top', 'best',
+}
+
+NEGATIVE_WORDS = {
+    'crash', 'plunge', 'drop', 'fall', 'decline', 'loss', 'bearish', 'sell',
+    'downgrade', 'underperform', 'weak', 'negative', 'low', 'miss', 'fail',
+    'risk', 'concern', 'warning', 'threat', 'crisis', 'recession', 'layoff',
+    'cut', 'slash', 'debt', 'lawsuit', 'investigation', 'fraud', 'scandal',
+    'bankruptcy', 'default', 'volatile', 'uncertainty', 'fear', 'panic',
+    'worst', 'slump', 'tumble', 'sink', 'collapse', 'trouble',
+}
 
 
-def _get_vader():
-    """Lazy-load VADER sentiment analyzer."""
-    global _vader
-    if _vader is None:
-        import nltk
-        try:
-            from nltk.sentiment.vader import SentimentIntensityAnalyzer
-        except LookupError:
-            nltk.download('vader_lexicon', quiet=True)
-            from nltk.sentiment.vader import SentimentIntensityAnalyzer
-        _vader = SentimentIntensityAnalyzer()
-    return _vader
+def analyze_sentiment(text: str) -> Dict:
+    """
+    Analyze sentiment of text using keyword matching.
+    Returns a score (-1 to +1) and category.
+    """
+    words = set(re.findall(r'\b[a-z]+\b', text.lower()))
+
+    pos_count = len(words & POSITIVE_WORDS)
+    neg_count = len(words & NEGATIVE_WORDS)
+    total = pos_count + neg_count
+
+    if total == 0:
+        compound = 0.0
+    else:
+        compound = round((pos_count - neg_count) / total, 4)
+
+    positive = round(pos_count / max(len(words), 1), 4)
+    negative = round(neg_count / max(len(words), 1), 4)
+    neutral = round(1.0 - positive - negative, 4)
+
+    if compound >= 0.05:
+        category = "bullish"
+    elif compound <= -0.05:
+        category = "bearish"
+    else:
+        category = "neutral"
+
+    return {
+        "compound": compound,
+        "positive": positive,
+        "negative": negative,
+        "neutral": max(0, neutral),
+        "category": category,
+    }
 
 
 def fetch_news_headlines(symbol: str, max_results: int = 10) -> List[Dict]:
@@ -35,19 +75,19 @@ def fetch_news_headlines(symbol: str, max_results: int = 10) -> List[Dict]:
     Fetch recent news headlines for a stock symbol.
     Uses Google News RSS feed (free, no API key).
     """
-    import feedparser
+    try:
+        import feedparser
+    except ImportError:
+        log.warning("feedparser not installed — returning empty headlines")
+        return []
 
-    # Clean symbol for search
     clean_symbol = symbol.replace(".NS", "").replace("^", "")
-
-    # Try Google News RSS
     url = f"https://news.google.com/rss/search?q={clean_symbol}+stock&hl=en-US&gl=US&ceid=US:en"
 
     try:
         feed = feedparser.parse(url)
         headlines = []
         for entry in feed.entries[:max_results]:
-            # Clean HTML from title
             title = re.sub(r'<[^>]+>', '', entry.get('title', ''))
             source = entry.get('source', {}).get('title', 'Unknown')
             published = entry.get('published', '')
@@ -62,31 +102,6 @@ def fetch_news_headlines(symbol: str, max_results: int = 10) -> List[Dict]:
     except Exception as e:
         log.warning(f"Failed to fetch news for {symbol}: {e}")
         return []
-
-
-def analyze_sentiment(text: str) -> Dict:
-    """
-    Analyze sentiment of a single text using VADER.
-    Returns compound score (-1 to +1) and category.
-    """
-    vader = _get_vader()
-    scores = vader.polarity_scores(text)
-
-    compound = scores['compound']
-    if compound >= 0.05:
-        category = "bullish"
-    elif compound <= -0.05:
-        category = "bearish"
-    else:
-        category = "neutral"
-
-    return {
-        "compound": round(compound, 4),
-        "positive": round(scores['pos'], 4),
-        "negative": round(scores['neg'], 4),
-        "neutral": round(scores['neu'], 4),
-        "category": category,
-    }
 
 
 def get_stock_sentiment(symbol: str, max_headlines: int = 10) -> Dict:

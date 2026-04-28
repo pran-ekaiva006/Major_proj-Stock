@@ -6,6 +6,7 @@ __pycache__/
 
 # Virtual environment
 venv/
+.venv/
 .env
 
 # VS Code settings
@@ -17,3 +18,16 @@ venv/
 # OS files
 .DS_Store
 Thumbs.db
+
+# ML artifacts (large files)
+ml_model/*.keras
+ml_model/*.h5
+ml_model/results/*.png
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.idea/
+*.swp

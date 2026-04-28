@@ -1,6 +1,7 @@
 {
   "best_model": "random_forest",
-  "best_r2": 0.8958,
+  "best_r2": 0.893,
+  "prediction_type": "percentage_change",
   "features_used": [
     "open",
     "high",
@@ -48,29 +49,29 @@
   "results": [
     {
       "Model": "Linear Regression",
-      "R\u00b2": 0.883,
-      "MAE": 8.9182,
-      "RMSE": 11.2404,
-      "MAPE (%)": 2.15,
-      "Directional Accuracy (%)": 49.32,
+      "R\u00b2": 0.8394,
+      "MAE": 10.0706,
+      "RMSE": 13.1697,
+      "MAPE (%)": 2.39,
+      "Directional Accuracy (%)": 50.68,
       "Training Time (s)": 0.02
     },
     {
       "Model": "Random Forest",
-      "R\u00b2": 0.8958,
-      "MAE": 8.3525,
-      "RMSE": 10.6092,
-      "MAPE (%)": 2.01,
-      "Directional Accuracy (%)": 48.65,
+      "R\u00b2": 0.893,
+      "MAE": 8.2891,
+      "RMSE": 10.749,
+      "MAPE (%)": 1.99,
+      "Directional Accuracy (%)": 49.32,
       "Training Time (s)": 1.45
     },
     {
       "Model": "XGBoost",
-      "R\u00b2": 0.8952,
-      "MAE": 8.3608,
-      "RMSE": 10.6389,
-      "MAPE (%)": 2.01,
-      "Directional Accuracy (%)": 50.0,
+      "R\u00b2": 0.8782,
+      "MAE": 8.7851,
+      "RMSE": 11.4704,
+      "MAPE (%)": 2.1,
+      "Directional Accuracy (%)": 48.65,
       "Training Time (s)": 0.89
     }
   ]

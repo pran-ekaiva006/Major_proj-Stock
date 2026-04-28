@@ -2,7 +2,7 @@
 Predictions Router
 ===================
 ML prediction endpoints with confidence metrics and history tracking.
-Heavy ML libraries (pandas, numpy, joblib) are imported lazily to keep startup fast.
+Uses lightweight numpy-based models for fast startup and predictions.
 """
 
 import os
@@ -10,7 +10,7 @@ import json
 import logging
 
 import psycopg
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional
 
 from backend.database import get_db_connection
@@ -24,26 +24,28 @@ router = APIRouter(prefix="/api", tags=["Predictions"])
 # ──────────────────────────────────────────────────────────────────────
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_model')
-_model = None
-_scaler = None
+_weights = None
+_scaler_mean = None
+_scaler_std = None
 _model_meta = None
 _loaded = False
 
 
 def _load_model_artifacts():
-    """Lazily load ML model, scaler, and metadata on first prediction call."""
-    global _model, _scaler, _model_meta, _loaded
+    """Lazily load ML model weights and metadata on first prediction call."""
+    global _weights, _scaler_mean, _scaler_std, _model_meta, _loaded
     if _loaded:
         return
 
     _loaded = True
-    log.info("Loading ML model artifacts (first call)...")
+    log.info("Loading ML model artifacts...")
 
-    import joblib
+    import numpy as np
 
     meta_path = os.path.join(MODEL_DIR, "model_meta.json")
-    scaler_path = os.path.join(MODEL_DIR, "scaler.joblib")
-    model_path = os.path.join(MODEL_DIR, "stock_predictor.joblib")
+    weights_path = os.path.join(MODEL_DIR, "lr_weights.npy")
+    mean_path = os.path.join(MODEL_DIR, "scaler_mean.npy")
+    std_path = os.path.join(MODEL_DIR, "scaler_std.npy")
 
     # Load metadata
     if os.path.exists(meta_path):
@@ -51,35 +53,18 @@ def _load_model_artifacts():
             _model_meta = json.load(f)
         log.info(f"Model metadata loaded: best={_model_meta.get('best_model')}")
 
-    # Load scaler
-    if os.path.exists(scaler_path):
-        _scaler = joblib.load(scaler_path)
-        log.info("Feature scaler loaded")
+    # Load numpy weights and scaler
+    if os.path.exists(weights_path):
+        _weights = np.load(weights_path)
+        log.info(f"Model weights loaded ({len(_weights)} params)")
 
-    # Load model
-    best_model_type = _model_meta.get("best_model", "linear_regression") if _model_meta else "linear_regression"
+    if os.path.exists(mean_path):
+        _scaler_mean = np.load(mean_path)
+        log.info("Scaler mean loaded")
 
-    if best_model_type == "lstm":
-        try:
-            from ml_model.lstm_model import load_lstm_model
-            lstm_path = os.path.join(os.path.dirname(__file__), '..', 'ml_model', 'lstm_model.keras')
-            if os.path.exists(lstm_path):
-                _model = load_lstm_model(lstm_path)
-                log.info("LSTM model loaded")
-            else:
-                log.warning("LSTM model file not found, falling back to joblib model")
-                if os.path.exists(model_path):
-                    _model = joblib.load(model_path)
-        except ImportError:
-            log.warning("TensorFlow not available, falling back to joblib model")
-            if os.path.exists(model_path):
-                _model = joblib.load(model_path)
-    else:
-        if os.path.exists(model_path):
-            _model = joblib.load(model_path)
-            log.info(f"ML model loaded ({best_model_type})")
-        else:
-            log.warning(f"Model file not found at {model_path}")
+    if os.path.exists(std_path):
+        _scaler_std = np.load(std_path)
+        log.info("Scaler std loaded")
 
 
 def _get_model_meta():
@@ -92,41 +77,73 @@ def _get_model_meta():
 # Feature Engineering for Prediction
 # ──────────────────────────────────────────────────────────────────────
 
-def _prepare_features(prices: list):
+def _prepare_features(prices: list, feature_cols: list):
     """
-    Prepare feature vector from price history using the feature engineering pipeline.
-    Returns the last row of features (for predicting next day).
+    Prepare feature vector from price history.
+    Returns the last row of features and the current close price.
     """
     import pandas as pd
     import numpy as np
-    from ml_model.feature_engineering import add_technical_indicators, get_feature_columns
+    from ml_model.feature_engineering import add_technical_indicators
 
     df = pd.DataFrame(prices)
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
+    # Convert Decimal to float
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        if col in df.columns:
+            df[col] = df[col].astype(float)
     df.set_index('date', inplace=True)
 
     # Apply feature engineering
     df = add_technical_indicators(df)
-    feature_cols = get_feature_columns()
 
-    # Ensure all columns exist
+    # Get current close price (last row)
+    current_close = float(df['close'].iloc[-1])
+
+    # Ensure all feature columns exist
     for c in feature_cols:
         if c not in df.columns:
             df[c] = 0
 
-    # Get the last row
-    features = df[feature_cols].iloc[-1:].values
+    # Get the last row of features
+    features = df[feature_cols].iloc[-1:].values.astype(float)
 
-    # Scale if scaler is available
-    if _scaler is not None:
-        features = _scaler.transform(features)
-
-    return features
+    return features, current_close
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Helper to query stock data (imported lazily to avoid circular import)
+# Prediction function
+# ──────────────────────────────────────────────────────────────────────
+
+def _predict_next_close(features, current_close):
+    """
+    Predict next-day closing price.
+    Model predicts % change, which is applied to current close.
+    """
+    import numpy as np
+
+    # Standardize features
+    if _scaler_mean is not None and _scaler_std is not None:
+        features = (features - _scaler_mean) / _scaler_std
+
+    # Add bias term
+    X_b = np.column_stack([features, np.ones(len(features))])
+
+    # Predict percentage change
+    pct_change = float(X_b @ _weights)
+
+    # Clamp to reasonable range (-10% to +10% daily)
+    pct_change = max(-10.0, min(10.0, pct_change))
+
+    # Apply to current price
+    predicted_price = current_close * (1 + pct_change / 100)
+
+    return round(predicted_price, 2)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Helper imports
 # ──────────────────────────────────────────────────────────────────────
 
 def _query_stock(symbol: str, conn):
@@ -150,33 +167,30 @@ def predict(
     """Predict next-day closing price using the best ML model."""
     _load_model_artifacts()
 
-    if _model is None:
+    if _weights is None:
         raise HTTPException(status_code=503, detail="Model not loaded. Run train.py first.")
 
     data = _query_stock(req.symbol, conn)
     if not data or not data["prices"]:
         raise HTTPException(status_code=404, detail="No data available for this symbol")
 
-    # Need at least 30 price points for meaningful technical indicators
     if len(data["prices"]) < 30:
         raise HTTPException(
             status_code=400,
             detail=f"Need at least 30 data points, got {len(data['prices'])}"
         )
 
+    # Get feature columns from metadata (excluding 'close')
+    feature_cols = _model_meta.get("features_used", []) if _model_meta else []
+    if not feature_cols:
+        raise HTTPException(status_code=503, detail="Model metadata missing feature list")
+
     try:
-        import numpy as np
-        features = _prepare_features(data["prices"])
-        prediction = float(_model.predict(features)[0])
+        features, current_close = _prepare_features(data["prices"], feature_cols)
+        prediction = _predict_next_close(features, current_close)
     except Exception as e:
         log.error(f"Prediction failed for {req.symbol}: {e}")
-        import pandas as pd
-        latest = data["prices"][0]
-        df = pd.DataFrame([latest])
-        try:
-            prediction = float(_model.predict(df[["open", "high", "low", "close", "volume"]])[0])
-        except Exception:
-            raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
     # Build response
     live = _get_live(req.symbol, conn)
@@ -197,14 +211,13 @@ def predict(
                 }
                 break
 
-    # Calculate confidence as a simple function of R²
     confidence = None
     if _model_meta and "best_r2" in _model_meta:
         confidence = round(max(0, min(100, _model_meta["best_r2"] * 100)), 1)
 
     return PredictResponse(
         symbol=req.symbol.upper(),
-        predicted_next_day_close=round(prediction, 2),
+        predicted_next_day_close=prediction,
         model_used=best_model_name,
         confidence=confidence,
         metrics=metrics_data,

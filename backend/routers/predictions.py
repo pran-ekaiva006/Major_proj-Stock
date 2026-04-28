@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api", tags=["Predictions"])
 # Lazy Model Loading
 # ──────────────────────────────────────────────────────────────────────
 
-MODEL_DIR = os.path.join(os.path.dirname(__file__), '..', 'ml_model')
+MODEL_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_model')
 _model = None
 _scaler = None
 _model_meta = None
